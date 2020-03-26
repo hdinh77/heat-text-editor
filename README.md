@@ -24,7 +24,7 @@ things learned about C
 - tcgetattr is the function to get all the settings and variables
 - tcsetattr is the function to set the changes
 - if either of these functions fails, they return -1 and set a global variable errno to EAGAIN, which indicates an error
-- read function takes input from the user and is used to store a single character each time
+- read function takes input from the user and is used to store a single character each time, some low-level character handling
 - instead of having a bunch of write statements, we append everything onto one character array (string) and then have one big write
 - write(STDOUT_FILENO, ...) writes the string to the terminal using the string and its length
 - when we want to append, we create a new character array with a larger length, using the realloc function, which basically
