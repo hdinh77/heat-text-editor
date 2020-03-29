@@ -1,6 +1,8 @@
 # heat-text-editor
 
 things learned about C
+- low-level terminal / character key processing
+- escape sequences, and how each of them correlate to different keypresses and how they can be changed
 - #define creates a global constant that is replaced with the following string
 - when we defined CTRL_KEY, this replaces every instance of CTRL_KEY(k) with ((k) & 0x1f) which is the expression
   "whatever character you enter which is represented as k" bitwise-AND with 0x1f (which is 00011111), essentially
@@ -34,3 +36,15 @@ things learned about C
  - escape sequences can be used to do various things, like command to clear the screen, or move the cursor
  - basic format: "\x1b[" <-uses two bytes (1 for \x1b and 1 for [), then you put in a number that serves as a parameter,
     and the letter that signifies what command you are calling (J for clear screen command, and H to move the cursor)
+- to check if a character is an escape character, check that it equals '\x1b' (w/o the '\' because that's a separate byte)
+- after this, if there is a '[', then it's an escape sequence and you can read the following parameters/commands
+- if there isnt, it's probably just the escape character
+- an enum is a good way to assign names to constants, kind of like define
+- in an enum, if the first constant is set 1000, the following ones will be iterated
+- when checking for certain escape sequences, can check each individual character by reading one character,
+  - and storing that at the address of an element in a character array
+- ternary operator: using the ? and : to evaluate a boolean and return an expression (not a statement)
+- condition ? value_if_true : value_if_false ---- this is used as (c == PAGE_UP ? ARROW_UP : ARROW_DOWN) in the program to 
+  - simply evaluate whether the page up or page down is being used
+- variables can't be declared in a switch statement or its cases, so enclose it in a block using the brackets
+- typedef is used as an abbreviation for a specific type, here we use it so we can write just erow instead of struct erow every time

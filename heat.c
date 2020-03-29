@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -18,11 +19,35 @@
 //"whatever character you enter" bitwised with 0x1f which is 00011111
 #define CTRL_KEY(k) ((k) & 0x1f)
 
+//this kind of sets these arrows to be an int, instead of representing awsd to keep 
+//it from conflicting, so now these constants are distinguishable
+//the first constant is set 1000, the following ones will be iterated to 1001...
+enum editorKey {
+    ARROW_LEFT = 1000,
+    ARROW_RIGHT,
+    ARROW_UP,
+    ARROW_DOWN,
+    HOME_KEY,
+    END_KEY,
+    DEL_KEY,
+    PAGE_UP,
+    PAGE_DOWN
+};
+
+//this will store a row of text in the editor
+//this typedef lets us identify erow as a struct erow, basically an abbreviation
+typedef struct erow {
+    int size;
+    char* chars;
+}erow;
+
 //this just puts our terminal into a global struct so we can add in the width and height
 struct editorConfig {
-    struct termios orig_termios;
-    int rows;
-    int cols;
+    struct termios orig_termios;    //the actual screen
+    int rows, cols;                 //screen rows and columns
+    int cursorX, cursorY;                     //cursor x and y
+    int numRows;
+    erow row;
 };
 struct editorConfig E;
 
@@ -76,12 +101,80 @@ void enableRawMode() {
 }
 
 //asks for the input from the keyboard
-char editorReadKey() {
+int editorReadKey() {
     int nread;
     char c;
     //while the nread is not 1 means that there is no character input from the keyboard yet
     while((nread = read(STDIN_FILENO, &c, 1)) != 1) {
         if(nread == -1 && errno != EAGAIN) die("read");
+    }
+
+    //if the key read is an escape character, we look at the next two bytes provided
+    if(c == '\x1b') {
+        char seq[3];
+
+        //these next two if statements check if there is a parameter or command called
+        //if not, then assume that it's just the escape key and return
+        if(read(STDIN_FILENO, &seq[0], 1) != 1) {
+            return '\x1b';
+        }
+        if(read(STDIN_FILENO, &seq[1], 1) != 1) {
+            return '\x1b';
+        }
+
+        //checks if it is an escape sequence, indicated by the [, then checks if they are arrows
+        //the ~ character is used for the page up and down, so check for that
+        if(seq[0] == '[') {
+            if(seq[1] >= '0' && seq[1] <= '9') {
+                //here, it checks the next character if it's a number, then checks that last character if
+                //it's a ~, identifying it as a specific command
+                if(read(STDIN_FILENO, &seq[2], 1) != 1) {
+                    return '\x1b';
+                }
+
+                if(seq[2] == '~') {
+                    switch(seq[1]) {
+                        case '1':
+                            return HOME_KEY;
+                        case '3':
+                            return DEL_KEY;
+                        case '4':
+                            return END_KEY;
+                        case '5':
+                            return PAGE_UP;
+                        case '6':
+                            return PAGE_DOWN;
+                        case '7':
+                            return HOME_KEY;
+                        case '8':
+                            return END_KEY;
+                    }
+                }
+            }else if(seq[0] == 'O') {
+                //alternative for these keys that doesn't use '['
+                switch(seq[1]) {
+                    case 'H':
+                        return HOME_KEY;
+                    case 'F':
+                        return END_KEY;
+                }
+            }else {
+                switch(seq[1]) {
+                    case 'A': 
+                        return ARROW_UP;
+                    case 'B':
+                        return ARROW_DOWN;
+                    case 'C':
+                        return ARROW_RIGHT;
+                    case 'D':
+                        return ARROW_LEFT;
+                    case 'H': 
+                        return HOME_KEY;
+                    case 'F':
+                        return END_KEY;
+                }
+            }
+        }
     }
     return c;
 }
@@ -98,6 +191,19 @@ int getWindowSize(int* rows, int* cols) {
         return 0;
     }
 }
+
+/*--------------------------------------------------FILE I/O---------------------------------------------------*/
+void editorOpen() {
+    char* line = "Hello World";
+    ssize_t lineLength = 13;
+    E.row.size = lineLength;
+    //malloc just allocates the memory needed, then memcpy copies the line into the erow
+    E.row.chars = malloc(lineLength + 1);
+    memcpy(E.row.chars, line, lineLength);
+    E.row.chars[lineLength] = '\0';
+    E.numRows = 1;
+}
+
 
 /*----------------------------------------------APPEND BUFFER--------------------------------------------------*/
 
@@ -191,16 +297,22 @@ void editorRefreshScreen() {
     */
 
     abAppend(&ab, "\x1b[H", 3);
-    
     /*
     this does the command H that positions the cursor to the top
     there's no argument because the default is the row and column 1, 1 which is already at the top left
     */
 
-    abAppend(&ab, "\x1b[?25h", 6);
-
     editorDrawRows(&ab);
-    abAppend(&ab, "\x1b[H", 3);
+
+    /*
+    this places the cursor after the character that was entered
+    add one because the terminal starts at 1, but indices still start at 0 in C
+    */
+    char buf[32];
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cursorY + 1, E.cursorX + 1);
+    abAppend(&ab, buf, strlen(buf));
+
+    abAppend(&ab, "\x1b[?25h", 6);
 
     write(STDOUT_FILENO, ab.bufferString, ab.length);
     abFree(&ab);
@@ -208,9 +320,37 @@ void editorRefreshScreen() {
 
 /*-----------------------------------------------------INPUT-----------------------------------------------------*/
 
+//lets the user move the cursor
+void editorMoveCursor(int key) {
+    
+    switch(key){
+        case ARROW_LEFT:
+            if(E.cursorX != 0) {
+                E.cursorX--;
+            }
+            break;
+        case ARROW_RIGHT:
+            if(E.cursorX != E.cols - 1) {
+                E.cursorX++;
+            }
+            break;
+        case ARROW_UP:
+            if(E.cursorY != 0) {
+                E.cursorY--;
+            }
+            break;
+        case ARROW_DOWN:
+            if(E.cursorY != E.rows - 1) {
+                E.cursorY++;
+            }
+            break;
+        
+    }
+}
+
 //processes the input, maps keys to different functions
 void editorProcessKeypress() {
-    char c = editorReadKey();
+    int c = editorReadKey();
 
     switch(c) {
         case CTRL_KEY('z'):
@@ -218,18 +358,41 @@ void editorProcessKeypress() {
             write(STDOUT_FILENO, "\x1b[H", 3);
             exit(0);
             break;
+        case HOME_KEY:
+            E.cursorX = 0;
+            break;
+        case END_KEY:
+            E.cursorX = E.cols - 1;
+            break;
+        case PAGE_UP: case PAGE_DOWN:
+            {
+                //times can't be declared in the case, so must make it a block using brackets
+                int times = E.rows;
+                while(times--) {
+                    //ternary operator
+                    editorMoveCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
+                }
+            }
+            break;
+        case ARROW_LEFT: case ARROW_RIGHT: case ARROW_UP: case ARROW_DOWN:
+            editorMoveCursor(c);
+            break;
     }
 }
 
 /*--------------------------------------------------INITIALIZATION----------------------------------------------*/
 
 void initEditor() {
+    E.cursorX = 0;
+    E.cursorY = 0;
+    E.numRows = 0;
     if(getWindowSize(&E.rows, &E.cols) == -1) die("getWindowSize");
 }
 
 int main() {
     enableRawMode();
     initEditor();
+    editorOpen();
     
     while(1) {
         editorRefreshScreen();
