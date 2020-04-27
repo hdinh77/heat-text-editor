@@ -1,17 +1,25 @@
 //heat.c, a text editor created by Heather Dinh
 //3/23/20
 
+//feature test macros
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
+
 #include <ctype.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 #define HEAT_VERSION "0.0.1"
+#define HEAT_TAB_STOP 8
 
 //this CTRL_KEY & bitwises the character with 00011111
 //basically making the first three 0 so we know the CTRL is pressed
@@ -39,15 +47,23 @@ enum editorKey {
 typedef struct erow {
     int size;
     char* chars;
+    char* render;           //contains the actual characters that are drawn to text
+    int rsize;
 }erow;
 
 //this just puts our terminal into a global struct so we can add in the width and height
 struct editorConfig {
     struct termios orig_termios;    //the actual screen
     int rows, cols;                 //screen rows and columns
-    int cursorX, cursorY;                     //cursor x and y
+    int cursorX, cursorY;           //cursor x and y
+    int rx;                         //render index        
     int numRows;
-    erow row;
+    erow* row;
+    int rowoff;                     //keeps track of what row on currently, offset
+    int coloff;
+    char* filename;                 //to display filename in the status bar
+    char statusmsg[80];             //to display the messages to the user
+    time_t statusmsg_time;          //timestamp to see how long to display messages
 };
 struct editorConfig E;
 
@@ -192,16 +208,94 @@ int getWindowSize(int* rows, int* cols) {
     }
 }
 
-/*--------------------------------------------------FILE I/O---------------------------------------------------*/
-void editorOpen() {
-    char* line = "Hello World";
-    ssize_t lineLength = 13;
-    E.row.size = lineLength;
+/*-------------------------------------------------ROW OPERATIONS-----------------------------------------------*/
+
+//calculates the render position correctly in the tabs
+int editorRowCursorXToRx(erow* row, int cx) {
+    int rx = 0;
+    int j;
+    for(j = 0; j < cx; j++) {
+        if(row->chars[j] == '\t') {
+            rx += (HEAT_TAB_STOP - 1) - (rx % HEAT_TAB_STOP);
+        }
+        rx++;
+    }
+    return rx;
+}
+
+void editorUpdateRow(erow* row) {
+    int tabs = 0;
+    int i = 0;
+
+    for(i = 0; i < row->size; i++) {
+        if(row->chars[i] == '\t') {
+            tabs++;
+        }
+    }
+
+    free(row->render);
+    row->render = malloc(row->size + tabs*(HEAT_TAB_STOP - 1) + 1);
+
+    int idx = 0;
+    for(i = 0; i < row->size; i++) {
+        if(row->chars[i] == '\t') {
+            row->render[idx++] = ' ';
+            while(idx % HEAT_TAB_STOP != 0) {
+                row->render[idx++] = ' ';
+            }
+        }else {
+            row->render[idx++] = row->chars[i];
+        }
+    }
+
+    row->render[idx] = '\0';
+    row->rsize = idx;
+}
+
+//reallocates the entire text so it uses more memory (# characters in each row, multiplied by # rows)
+//set the at at the row we're looking at
+void editorAppendRow(char* s, size_t length) {
+    E.row = realloc(E.row, sizeof(erow) * (E.numRows + 1));
+
+    //using row[at] because now row is a pointer to an erow, so dereference to see which part of row it is
+    int at = E.numRows;
+    E.row[at].size = length;
     //malloc just allocates the memory needed, then memcpy copies the line into the erow
-    E.row.chars = malloc(lineLength + 1);
-    memcpy(E.row.chars, line, lineLength);
-    E.row.chars[lineLength] = '\0';
-    E.numRows = 1;
+    E.row[at].chars = malloc(length + 1);    
+    memcpy(E.row[at].chars, s, length);
+    E.row[at].chars[length] = '\0';
+
+    E.row[at].rsize = 0;
+    E.row[at].render = NULL;
+    editorUpdateRow(&E.row[at]);
+
+    E.numRows++;
+}
+
+/*--------------------------------------------------FILE I/O---------------------------------------------------*/
+void editorOpen(char* filename) {
+    free(E.filename);
+    E.filename = strdup(filename);
+    //takes in a file, using getline to add all contents into of file into a char*
+    FILE* fp = fopen(filename, "r");
+    if(!fp) {
+        die("fopen");
+    }
+
+    char* line = NULL;
+    size_t lineCapacity = 0;
+    ssize_t lineLength;
+    while((lineLength = getline(&line, &lineCapacity, fp)) != -1) {
+        while(lineLength > 0 && (line[lineLength - 1] == '\n' || line[lineLength - 1] == '\r')) {
+            lineLength--;
+        }
+
+        editorAppendRow(line, lineLength);
+    }
+
+    free(line);
+    fclose(fp);
+    
 }
 
 
@@ -240,46 +334,121 @@ void abFree(struct abuf* ab) {
 
 /*---------------------------------------------------OUTPUT------------------------------------------------------*/
 
+//lets the person scroll down on the editor
+void editorScroll() {
+    E.rx = 0;
+    if(E.cursorY < E.numRows) {
+        E.rx = editorRowCursorXToRx(&E.row[E.cursorY], E.cursorX);
+    }
+
+    //if the cursor is going up the screen
+    if(E.cursorY < E.rowoff) {
+        E.rowoff = E.cursorY;
+    }
+    //if the cursor is going down the screen
+    if(E.cursorY >= E.rowoff + E.rows) {
+        E.rowoff = E.cursorY - E.rows + 1;
+    }
+    if(E.rx < E.coloff) {
+        E.coloff = E.rx;
+    }
+    if(E.rx >= E.coloff + E.cols) {
+        E.coloff = E.rx - E.cols + 1;
+    }
+
+}
+
 //draws a tilde on each line, and a welcome message
 void editorDrawRows(struct abuf* ab) {
     int i;
     for(i = 0; i < E.rows; i++) {
         //displays a welcome message
-        if(i == E.rows / 3) {
-            char welcome[80];
-            int welcomelen = snprintf(welcome, sizeof(welcome), "Heat editor -- version %s", HEAT_VERSION);
-            if(welcomelen > E.cols) {
-                welcomelen = E.cols;
-            }
+        int filerow = i + E.rowoff;
+        if(filerow >= E.numRows) {
+            //this if statement ^^^ checks if anything has been written yet
+            if(E.numRows == 0 && i == E.rows / 3) {
+                char welcome[80];
+                int welcomelen = snprintf(welcome, sizeof(welcome), "Heat editor -- version %s", HEAT_VERSION);
+                if(welcomelen > E.cols) {
+                    welcomelen = E.cols;
+                }
 
-            //centering the welcome text in the middle
-            int padding = (E.cols - welcomelen) / 2;
-            if(padding) {
-                //this statement just makes sure the first line has the tilde
+                //centering the welcome text in the middle
+                int padding = (E.cols - welcomelen) / 2;
+                if(padding) {
+                    //this statement just makes sure the first line has the tilde
+                    abAppend(ab, "~", 1);
+                    padding--;
+                }
+                while(padding--) {
+                    //this keep adding spaces until the padding is 0
+                    abAppend(ab, " ", 1);
+                }
+
+                abAppend(ab, welcome, welcomelen);
+            }else {
                 abAppend(ab, "~", 1);
-                padding--;
             }
-            while(padding--) {
-                //this keep adding spaces until the padding is 0
-                abAppend(ab, " ", 1);
+        } else {
+            //in the case that there has already been something written already
+            int length = E.row[filerow].rsize - E.coloff;
+            if(length < 0) {
+                length = 0;
             }
-
-            abAppend(ab, welcome, welcomelen);
-        }else {
-            abAppend(ab, "~", 1);
+            if(length > E.cols) {
+                length = E.cols;
+            }
+            abAppend(ab, &E.row[filerow].render[E.coloff], length);
         }
 
         //this K command erases part of a line, its parameter is 0, so it will erase to right of the line
         abAppend(ab, "\x1b[K", 3);
 
-        if(i < E.rows - 1) {
-            abAppend(ab, "\r\n", 2);
+        abAppend(ab, "\r\n", 2);
+    }
+}
+
+void editorDrawStatusBar(struct abuf* ab) {
+    abAppend(ab, "\x1b[7m", 4);
+    //stores the status bar stuff, rstatus is the current line number aligned to the right
+    char status[80], rstatus[80];
+    int len = snprintf(status, sizeof(status), "%.20s - %d lines", E.filename ? E.filename : "[No Name]", E.numRows);
+    int rlen = snprintf(rstatus, sizeof(rstatus), "%d%d", E.cursorY + 1, E.numRows);
+    
+    if(len > E.cols) {
+        len = E.cols;
+    }
+
+    abAppend(ab, status, len);
+
+    while(len < E.cols) {
+        if(E.cols - len == rlen) {
+            abAppend(ab, rstatus, rlen);
+            break;
+        }else {
+            abAppend(ab, " ", 1);
+            len++;
         }
+    }
+    abAppend(ab, "\x1b[m", 3);
+    abAppend(ab, "\r\n", 2);
+}
+
+void editorDrawMessageBar(struct abuf* ab) {
+    abAppend(ab, "\x1b[K", 3);             //clears the message bar with Ctrl+K
+    int messageLen = strlen(E.statusmsg);
+    if(messageLen > E.cols) {
+        messageLen = E.cols;
+    }
+    if(messageLen && time(NULL) - E.statusmsg_time < 5) {
+        abAppend(ab, E.statusmsg, messageLen);
     }
 }
 
 //clears the screen
 void editorRefreshScreen() {
+    editorScroll();
+
     struct abuf ab = ABUF_INIT;
 
     //this hides the cursor when it draws
@@ -303,13 +472,15 @@ void editorRefreshScreen() {
     */
 
     editorDrawRows(&ab);
+    editorDrawStatusBar(&ab);
+    editorDrawMessageBar(&ab);
 
     /*
     this places the cursor after the character that was entered
     add one because the terminal starts at 1, but indices still start at 0 in C
     */
     char buf[32];
-    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cursorY + 1, E.cursorX + 1);
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cursorY - E.rowoff) + 1, (E.rx - E.coloff) + 1);
     abAppend(&ab, buf, strlen(buf));
 
     abAppend(&ab, "\x1b[?25h", 6);
@@ -318,20 +489,36 @@ void editorRefreshScreen() {
     abFree(&ab);
 }
 
+void editorSetStatusMessage(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(E.statusmsg, sizeof(E.statusmsg), fmt, ap);
+    va_end(ap);
+    E.statusmsg_time = time(NULL);
+}
+
 /*-----------------------------------------------------INPUT-----------------------------------------------------*/
 
 //lets the user move the cursor
 void editorMoveCursor(int key) {
-    
+    erow *row = (E.cursorY >= E.numRows) ? NULL: &E.row[E.cursorY];     //makes sure that cursorY is still in file
+
     switch(key){
         case ARROW_LEFT:
             if(E.cursorX != 0) {
                 E.cursorX--;
+            }else if(E.cursorY > 0) {
+                E.cursorY--;
+                E.cursorX = E.row[E.cursorY].size;
             }
             break;
         case ARROW_RIGHT:
-            if(E.cursorX != E.cols - 1) {
+            if(row && E.cursorX < row->size) {
+                //just checks that the x cursor is to the left
                 E.cursorX++;
+            }else if(row && E.cursorX == row->size) {
+                E.cursorY++;
+                E.cursorX = 0;
             }
             break;
         case ARROW_UP:
@@ -340,11 +527,17 @@ void editorMoveCursor(int key) {
             }
             break;
         case ARROW_DOWN:
-            if(E.cursorY != E.rows - 1) {
+            if(E.cursorY < E.numRows) {
                 E.cursorY++;
             }
             break;
-        
+    }
+
+    //stops the cursor if it reaches the end of the line
+    row = (E.cursorY >= E.numRows) ? NULL: &E.row[E.cursorY];
+    int rowlen = row ? row->size : 0;
+    if(E.cursorX > rowlen) {
+        E.cursorX = rowlen;
     }
 }
 
@@ -362,10 +555,20 @@ void editorProcessKeypress() {
             E.cursorX = 0;
             break;
         case END_KEY:
-            E.cursorX = E.cols - 1;
+            if(E.cursorY < E.numRows) {
+                E.cursorX = E.row[E.cursorY].size;
+            }
             break;
         case PAGE_UP: case PAGE_DOWN:
             {
+                if(c == PAGE_UP) {
+                    E.cursorY = E.rowoff;
+                } else if(c == PAGE_DOWN) {
+                    E.cursorY = E.rowoff + E.rows - 1;
+                    if(E.cursorY > E.numRows) {
+                        E.cursorY = E.numRows;
+                    }
+                }
                 //times can't be declared in the case, so must make it a block using brackets
                 int times = E.rows;
                 while(times--) {
@@ -385,14 +588,27 @@ void editorProcessKeypress() {
 void initEditor() {
     E.cursorX = 0;
     E.cursorY = 0;
+    E.rx = 0;
     E.numRows = 0;
+    E.rowoff = 0;
+    E.coloff = 0;
+    E.row = NULL;
+    E.rows -= 1;
+    E.filename = NULL;
+    E.statusmsg[0] = '\0';
+    E.statusmsg_time = 0;
     if(getWindowSize(&E.rows, &E.cols) == -1) die("getWindowSize");
+    E.rows -= 2;
 }
 
-int main() {
+int main(int argc, char* argv[]) {
     enableRawMode();
     initEditor();
-    editorOpen();
+    if(argc >= 2) {
+        editorOpen(argv[1]);
+    }
+    
+    editorSetStatusMessage("HELP: Ctrl-Z = quit");
     
     while(1) {
         editorRefreshScreen();

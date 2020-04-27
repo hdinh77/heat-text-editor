@@ -48,3 +48,11 @@ things learned about C
   - simply evaluate whether the page up or page down is being used
 - variables can't be declared in a switch statement or its cases, so enclose it in a block using the brackets
 - typedef is used as an abbreviation for a specific type, here we use it so we can write just erow instead of struct erow every time
+- from the <stdio.h> library, FILE is the file object, to open a file use fopen(pointer_to_filename, pointer_to_mode)
+- this is using the "r" mode, which opens the file for reading
+- function getline() sets the first param to point to the memory, and lineCapacity to how much memory allocated
+- realloc function takes in the original variable, and allocates the following space for it to copy into that 
+  - you specify in the function
+- <stdarg.h>, macros provide a portable way to access the arguments to a function when the function takes a variable number of arguments
+- ... argument is a variadic function, meaning you can take a lot of arguments
+  
