@@ -8,6 +8,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -20,6 +21,7 @@
 
 #define HEAT_VERSION "0.0.1"
 #define HEAT_TAB_STOP 8
+#define HEAT_QUIT_TIMES 3
 
 //this CTRL_KEY & bitwises the character with 00011111
 //basically making the first three 0 so we know the CTRL is pressed
@@ -31,6 +33,7 @@
 //it from conflicting, so now these constants are distinguishable
 //the first constant is set 1000, the following ones will be iterated to 1001...
 enum editorKey {
+    BACKSPACE = 127,
     ARROW_LEFT = 1000,
     ARROW_RIGHT,
     ARROW_UP,
@@ -59,6 +62,7 @@ struct editorConfig {
     int rx;                         //render index        
     int numRows;
     erow* row;
+    int dirty;
     int rowoff;                     //keeps track of what row on currently, offset
     int coloff;
     char* filename;                 //to display filename in the status bar
@@ -67,6 +71,10 @@ struct editorConfig {
 };
 struct editorConfig E;
 
+
+/*---------------------------------------------------PROTOTYPES-----------------------------------------------------*/
+
+void editorSetStatusMessage(const char* fmt, ...);
 
 /*--------------------------------------------------TERMINAL--------------------------------------------------------*/
 //this will Print Error of whatever the string that is inserted
@@ -270,7 +278,34 @@ void editorAppendRow(char* s, size_t length) {
     editorUpdateRow(&E.row[at]);
 
     E.numRows++;
+    E.dirty++;
 }
+
+// inserts a character into erow "row" at a position "at"
+void editorRowInsertChar(erow* row, int at, int c) {
+    if(at < 0 || at > row->size) at = row->size;
+    row->chars = realloc(row->chars, row->size + 2);         // add 2 here because need space for a null byte
+    memmove(&row->chars[at + 1], &row->chars[at], row->size - at + 1);
+    row->size++;
+    row->chars[at] = c;
+    editorUpdateRow(row);
+    E.dirty++;
+}
+
+
+/*---------------------------------------------------EDITOR OPERATIONS----------------------------------------*/
+
+// takes a character and inserts into the position of cursor
+void editorInsertChar(int c) {
+    if(E.cursorY == E.numRows) {                 // need to append a new row
+        editorAppendRow("", 0);
+    }
+
+    editorRowInsertChar(&E.row[E.cursorY], E.cursorX, c);
+    E.cursorX++;
+}
+
+
 
 /*--------------------------------------------------FILE I/O---------------------------------------------------*/
 void editorOpen(char* filename) {
@@ -295,9 +330,55 @@ void editorOpen(char* filename) {
 
     free(line);
     fclose(fp);
-    
+    E.dirty = 0;
 }
 
+// returns a string of the entire text file
+char* editorRowsToString(int* buflen) {
+    int totalLen = 0;
+    int j;
+    for(j = 0; j < E.numRows; j++) {
+        totalLen += E.row[j].size + 1;
+    }
+    *buflen = totalLen;
+
+    char* buf = malloc(totalLen);
+    char* p = buf;
+    for(j = 0; j < E.numRows; j++) {
+        memcpy(p, E.row[j].chars, E.row[j].size);
+        p += E.row[j].size;
+        *p = '\n';
+        p++;
+    }
+
+    return buf;
+
+}
+
+// uses string from function above and saves to disk
+void editorSave() {
+    if(E.filename == NULL) return;
+
+    int len;
+    char* buf = editorRowsToString(&len);
+    int fd = open(E.filename, O_RDWR | O_CREAT, 0644);      // using the fcntl.h library
+
+    if(fd != -1) {
+        if(ftruncate(fd, len) != -1) {
+            if(write(fd, buf, len) == len) {
+                close(fd);
+                free(buf);
+                E.dirty = 0;
+                editorSetStatusMessage("%d bytes written to disk", len);
+                return;
+            }
+       }
+       close(fd);
+    }
+
+    free(buf);
+    editorSetStatusMessage("Can't save, I/O error: %s", strerror(errno));
+}
 
 /*----------------------------------------------APPEND BUFFER--------------------------------------------------*/
 
@@ -412,7 +493,7 @@ void editorDrawStatusBar(struct abuf* ab) {
     abAppend(ab, "\x1b[7m", 4);
     //stores the status bar stuff, rstatus is the current line number aligned to the right
     char status[80], rstatus[80];
-    int len = snprintf(status, sizeof(status), "%.20s - %d lines", E.filename ? E.filename : "[No Name]", E.numRows);
+    int len = snprintf(status, sizeof(status), "%.20s - %d lines %s", E.filename ? E.filename : "[No Name]", E.numRows, E.dirty ? "(modified)" : "");
     int rlen = snprintf(rstatus, sizeof(rstatus), "%d%d", E.cursorY + 1, E.numRows);
     
     if(len > E.cols) {
@@ -543,13 +624,26 @@ void editorMoveCursor(int key) {
 
 //processes the input, maps keys to different functions
 void editorProcessKeypress() {
+    static int quit_times = HEAT_QUIT_TIMES;
+
     int c = editorReadKey();
 
     switch(c) {
+        case '\r':
+            // 'Enter' key TODO
+            break;
         case CTRL_KEY('z'):
+            if(E.dirty && quit_times > 0) {
+                editorSetStatusMessage("Warning. File has unsaved changes. Press Ctrl-Z %d more times to quit.", quit_times);
+                quit_times--;
+                return;
+            }
             write(STDOUT_FILENO, "\x1b[2J", 4);
             write(STDOUT_FILENO, "\x1b[H", 3);
             exit(0);
+            break;
+        case CTRL_KEY('s'):
+            editorSave();
             break;
         case HOME_KEY:
             E.cursorX = 0;
@@ -558,6 +652,12 @@ void editorProcessKeypress() {
             if(E.cursorY < E.numRows) {
                 E.cursorX = E.row[E.cursorY].size;
             }
+            break;
+        case BACKSPACE:
+        case CTRL_KEY('h'):
+        case DEL_KEY:
+            //All the same thing to delete a character
+            //TODO
             break;
         case PAGE_UP: case PAGE_DOWN:
             {
@@ -580,7 +680,18 @@ void editorProcessKeypress() {
         case ARROW_LEFT: case ARROW_RIGHT: case ARROW_UP: case ARROW_DOWN:
             editorMoveCursor(c);
             break;
+
+        case CTRL_KEY('l'):
+        case '\x1b':
+            // refresh/escape, don't do anything
+            break;
+
+        default:
+            editorInsertChar(c);
+            break;
     }
+
+    quit_times = HEAT_QUIT_TIMES;
 }
 
 /*--------------------------------------------------INITIALIZATION----------------------------------------------*/
@@ -593,7 +704,8 @@ void initEditor() {
     E.rowoff = 0;
     E.coloff = 0;
     E.row = NULL;
-    E.rows -= 1;
+    E.dirty = 0;
+    //E.rows -= 1;
     E.filename = NULL;
     E.statusmsg[0] = '\0';
     E.statusmsg_time = 0;
