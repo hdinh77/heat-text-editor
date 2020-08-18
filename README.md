@@ -62,6 +62,14 @@
  - O_TRUNC can make the file empty, but not using here because the write() could fail and lose all text
  - then map the Ctrl-S to save
 
+## Save as function
+ - hold the user input in the buf variable
+ - keep having the screen refresh and print out the status
+ - if "enter" is pressed and nothing in input, will keep going; else it will return the name inputted
+ - if something other than the "enter" and CNTRL is pressed, append it to the buf 
+ - using 128 because all the other CNTRL numbers are higher than it
+ - if the escape key '\x1b' is pressed, free the buf and stop inserting a name
+
 ## Miscellaneous C information
 - an enum is a good way to assign names to constants, kind of like define
 - in an enum, if the first constant is set 1000, the following ones will be iterated

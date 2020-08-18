@@ -75,6 +75,8 @@ struct editorConfig E;
 /*---------------------------------------------------PROTOTYPES-----------------------------------------------------*/
 
 void editorSetStatusMessage(const char* fmt, ...);
+void editorRefreshScreen();
+char* editorPrompt(char* prompt);
 
 /*--------------------------------------------------TERMINAL--------------------------------------------------------*/
 //this will Print Error of whatever the string that is inserted
@@ -276,11 +278,12 @@ void editorDelRow(int at) {
 
 //reallocates the entire text so it uses more memory (# characters in each row, multiplied by # rows)
 //set the at at the row we're looking at
-void editorAppendRow(char* s, size_t length) {
+void editorInsertRow(int at, char* s, size_t length) {
+    if(at < 0 || at > E.numRows) return;
     E.row = realloc(E.row, sizeof(erow) * (E.numRows + 1));
+    memmove(&E.row[at + 1], &E.row[at], sizeof(erow) * (E.numRows - at));
 
     //using row[at] because now row is a pointer to an erow, so dereference to see which part of row it is
-    int at = E.numRows;
     E.row[at].size = length;
     //malloc just allocates the memory needed, then memcpy copies the line into the erow
     E.row[at].chars = malloc(length + 1);    
@@ -330,11 +333,29 @@ void editorRowDelChar(erow* row, int at) {
 // takes a character and inserts into the position of cursor
 void editorInsertChar(int c) {
     if(E.cursorY == E.numRows) {                 // need to append a new row
-        editorAppendRow("", 0);
+        editorInsertRow(E.numRows, "", 0);
     }
 
     editorRowInsertChar(&E.row[E.cursorY], E.cursorX, c);
     E.cursorX++;
+}
+
+// if on the beginning of line, just insert a new row
+// otherwise, need to move around line so correct part is at the front
+void editorInsertNewline() {
+    if(E.cursorX == 0) {
+        editorInsertRow(E.cursorY, "", 0);
+    }else {
+        erow* row = &E.row[E.cursorY];
+        editorInsertRow(E.cursorY + 1, &row->chars[E.cursorX], row->size - E.cursorX);
+        row = &E.row[E.cursorY];
+        row->size = E.cursorX;
+        row->chars[row->size] = '\0';
+        editorUpdateRow(row);
+    }
+
+    E.cursorY++;
+    E.cursorX = 0;
 }
 
 void editorDelChar() {
@@ -371,7 +392,7 @@ void editorOpen(char* filename) {
             lineLength--;
         }
 
-        editorAppendRow(line, lineLength);
+        editorInsertRow(E.numRows, line, lineLength);
     }
 
     free(line);
@@ -403,7 +424,13 @@ char* editorRowsToString(int* buflen) {
 
 // uses string from function above and saves to disk
 void editorSave() {
-    if(E.filename == NULL) return;
+    if(E.filename == NULL) {
+        E.filename = editorPrompt("Save as: %s (ESC to cancel)");
+        if(E.filename == NULL) {
+            editorSetStatusMessage("Save aborted");
+            return;
+        }
+    }
 
     int len;
     char* buf = editorRowsToString(&len);
@@ -626,6 +653,45 @@ void editorSetStatusMessage(const char* fmt, ...) {
 
 /*-----------------------------------------------------INPUT-----------------------------------------------------*/
 
+//
+char* editorPrompt(char* prompt) {
+    size_t bufsize = 128;
+    char* buf = malloc(bufsize);
+
+    size_t buflen = 0;
+    buf[0] = '\0';
+
+    while(1) {
+        editorSetStatusMessage(prompt, buf);
+        editorRefreshScreen();
+
+        int c = editorReadKey();
+        if(c == DEL_KEY || c == CTRL_KEY('h') || c == BACKSPACE) {
+            if(buflen != 0) {
+                buf[--buflen] = '\0';
+            }
+        }
+        else if(c == '\x1b') {
+            editorSetStatusMessage("");
+            free(buf);
+            return NULL;
+        }
+        else if(c == '\r') {
+            if(buflen != 0) {
+                editorSetStatusMessage("");
+                return buf;
+            }
+        }else if(!iscntrl(c) && c < 128) {
+            if(buflen == bufsize - 1) {
+                bufsize *= 2;
+                buf = realloc(buf, bufsize);
+            }
+            buf[buflen++] = c;
+            buf[buflen] = '\0';
+        }
+    }
+}
+
 //lets the user move the cursor
 void editorMoveCursor(int key) {
     erow *row = (E.cursorY >= E.numRows) ? NULL: &E.row[E.cursorY];     //makes sure that cursorY is still in file
@@ -676,7 +742,7 @@ void editorProcessKeypress() {
 
     switch(c) {
         case '\r':
-            // 'Enter' key TODO
+            editorInsertNewline();
             break;
         case CTRL_KEY('z'):
             if(E.dirty && quit_times > 0) {
@@ -763,6 +829,7 @@ void initEditor() {
 }
 
 int main(int argc, char* argv[]) {
+    printf("\033[0;36m");
     enableRawMode();
     initEditor();
     if(argc >= 2) {
