@@ -70,6 +70,16 @@
  - using 128 because all the other CNTRL numbers are higher than it
  - if the escape key '\x1b' is pressed, free the buf and stop inserting a name
 
+## Syntax highlighting
+ - now we have to iterate through every character as it is entered and change the color if it is a number
+ - escape key "\x1b[39m" sets the terminal back to the default color
+ - the "m" command at the end of the escape key lets us set the text color
+ - creating another array in each row that stores the highlighting, called hl so it updates each time
+ - created an enum to store the colors in the syntax highlighting
+ - everytime we do this, need to reallocate the memory because the render might be bigger now so the hl has to match
+ - memset basically all the elements in this newly reallocated memory to the default color, then loop through to change color
+ - store a current_color so it is more efficient and doesn't have to keep changing colors every character
+
 ## Miscellaneous C information
 - an enum is a good way to assign names to constants, kind of like define
 - in an enum, if the first constant is set 1000, the following ones will be iterated

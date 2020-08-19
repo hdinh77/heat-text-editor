@@ -1,5 +1,5 @@
 //heat.c, a text editor created by Heather Dinh
-//3/23/20
+//8/19/20
 
 //feature test macros
 #define _DEFAULT_SOURCE
@@ -45,6 +45,12 @@ enum editorKey {
     PAGE_DOWN
 };
 
+// all possible values that the hl array can contain
+enum editorHighlight {
+    HL_NORMAL = 0,
+    HL_NUMBER
+};
+
 //this will store a row of text in the editor
 //this typedef lets us identify erow as a struct erow, basically an abbreviation
 typedef struct erow {
@@ -52,6 +58,7 @@ typedef struct erow {
     char* chars;
     char* render;           //contains the actual characters that are drawn to text
     int rsize;
+    unsigned char* hl;      // contains the highlighting of the characters in the row
 }erow;
 
 //this just puts our terminal into a global struct so we can add in the width and height
@@ -218,6 +225,31 @@ int getWindowSize(int* rows, int* cols) {
     }
 }
 
+/*----------------------------------------------SYNTAX HIGHLIGHTING---------------------------------------------*/
+
+// updates the hl array of the given row so that it contains the right syntax highlighting
+void editorUpdateSyntax(erow* row) {
+    row->hl = realloc(row->hl, row->rsize);
+    memset(row->hl, HL_NORMAL, row->rsize);
+
+    int i;
+    for(i = 0; i < row->rsize; i++) {
+        if(isdigit(row->render[i])) {
+            row->hl[i] = HL_NUMBER;
+        }
+    }
+}
+
+// returns the color that corresponds to the type given
+int editorSyntaxToColor(int hl) {
+    switch(hl) {
+        case HL_NUMBER:
+            return 34;
+        default: 
+            return 37;
+    }
+}
+
 /*-------------------------------------------------ROW OPERATIONS-----------------------------------------------*/
 
 //calculates the render position correctly in the tabs
@@ -260,11 +292,14 @@ void editorUpdateRow(erow* row) {
 
     row->render[idx] = '\0';
     row->rsize = idx;
+
+    editorUpdateSyntax(row);
 }
 
 void editorFreeRow(erow* row) {
     free(row->render);
     free(row->chars);
+    free(row->hl);
 }
 
 void editorDelRow(int at) {
@@ -292,6 +327,7 @@ void editorInsertRow(int at, char* s, size_t length) {
 
     E.row[at].rsize = 0;
     E.row[at].render = NULL;
+    E.row[at].hl = NULL;
     editorUpdateRow(&E.row[at]);
 
     E.numRows++;
@@ -552,7 +588,31 @@ void editorDrawRows(struct abuf* ab) {
             if(length > E.cols) {
                 length = E.cols;
             }
-            abAppend(ab, &E.row[filerow].render[E.coloff], length);
+
+            // need to iterate through every character and if it is a digit, change color
+            char* c = &E.row[filerow].render[E.coloff];
+            unsigned char* hl = &E.row[filerow].hl[E.coloff];
+            int current_color = -1;
+            for(int i = 0; i < length; i++) {
+                if(hl[i] == HL_NORMAL) {
+                    if(current_color != -1) {
+                        abAppend(ab, "\x1b[39m", 5);    // set to the default color
+                        current_color = -1;
+                    }
+                    abAppend(ab, &c[i], 1);
+                }else {
+                    int color = editorSyntaxToColor(hl[i]);
+                    if(color != current_color) {
+                        current_color = color;
+                        char buf[16];
+                        int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", color);
+                        abAppend(ab, buf, clen);
+                    }
+                    abAppend(ab, &c[i], 1);
+                }
+            }
+
+            abAppend(ab, "\x1b[39m", 5);
         }
 
         //this K command erases part of a line, its parameter is 0, so it will erase to right of the line
