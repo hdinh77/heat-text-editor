@@ -80,6 +80,13 @@
  - memset basically all the elements in this newly reallocated memory to the default color, then loop through to change color
  - store a current_color so it is more efficient and doesn't have to keep changing colors every character
 
+## Detecting file type (like C++ or txt)
+ - using an editorSyntax struct to display filetype, match the file, and also set a flag to see if need to highlight
+ - strrchr() returns pointer to last occurance of a character in the string, so here we look for the '.' for filetype
+ - strcmp() compares two strings and returns 0 if they are equal
+ - if there is no extension, then you can check if that pattern ("c" or "cpp") is anywhere in the name by using strstr()
+ - want to do this whenever the user opens or saves a document
+
 ## Miscellaneous C information
 - an enum is a good way to assign names to constants, kind of like define
 - in an enum, if the first constant is set 1000, the following ones will be iterated

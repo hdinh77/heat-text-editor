@@ -19,7 +19,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define HEAT_VERSION "0.0.1"
+#define HEAT_VERSION "1.0.0"
 #define HEAT_TAB_STOP 8
 #define HEAT_QUIT_TIMES 3
 
@@ -48,8 +48,43 @@ enum editorKey {
 // all possible values that the hl array can contain
 enum editorHighlight {
     HL_NORMAL = 0,
-    HL_NUMBER
+    HL_NUMBER,
+    HL_STRING,
+    HL_COMMENT,
+    HL_KEYWORD
 };
+
+/*---------------------------------------------------FILE DETECTION---------------------------------------------*/
+#define HL_HIGHLIGHT_NUMBERS (1 << 0)   // this is a flag bit
+#define HL_HIGHLIGHT_STRINGS (1 << 1)
+
+struct editorSyntax {
+    char* filetype;                     // this will display to the user what type of file it is
+    char** filematch;                   // this will match the file to an array of strings to see what type of file it is
+    char** keywords;                    // list of all the keywords to highlight
+    char* singleline_comment_start;     // since most languages have different ways to have comments
+    int flags;                          // bit field that has flags to highlight or not
+};
+
+char* C_HL_EXTENSIONS[] = {".c", ".h", ".cpp", NULL};
+char* C_HL_KEYWORDS[] = {"if", "for", "while", "switch", "break", "continue", "return", "else", "struct", "enum", "class", "case",
+        "union", "typedef", "static", "default", "int", "long", "double", "float", "char", "void", "unsigned", "signed", NULL};
+
+// HLDB is highlight database, this is declaring a struct called HLDB that has the c filetype
+struct editorSyntax HLDB[] = {
+    {
+        "c",
+        C_HL_EXTENSIONS,
+        C_HL_KEYWORDS,
+        "//",
+        HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS
+    },
+};
+
+#define HLDB_ENTRIES (sizeof(HLDB) / sizeof(HLDB[0]))
+
+
+/*---------------------------------------------------STORING ROWS---------------------------------------------*/
 
 //this will store a row of text in the editor
 //this typedef lets us identify erow as a struct erow, basically an abbreviation
@@ -64,6 +99,7 @@ typedef struct erow {
 //this just puts our terminal into a global struct so we can add in the width and height
 struct editorConfig {
     struct termios orig_termios;    //the actual screen
+    struct editorSyntax* syntax;    // highlighting
     int rows, cols;                 //screen rows and columns
     int cursorX, cursorY;           //cursor x and y
     int rx;                         //render index        
@@ -232,10 +268,60 @@ void editorUpdateSyntax(erow* row) {
     row->hl = realloc(row->hl, row->rsize);
     memset(row->hl, HL_NORMAL, row->rsize);
 
-    int i;
-    for(i = 0; i < row->rsize; i++) {
-        if(isdigit(row->render[i])) {
-            row->hl[i] = HL_NUMBER;
+    if(E.syntax == NULL) return;
+
+    char** keywords = E.syntax->keywords;
+    char* scs = E.syntax->singleline_comment_start;
+    int scs_len = scs ? strlen(scs) : 0;
+
+    int in_string = 0;              // keep track where in string
+    for(int i = 0; i < row->rsize; i++) {
+        char c = row->render[i];
+
+        // comment
+        if(scs_len && !in_string) {
+            if(!strncmp(&row->render[i], scs, scs_len)) {
+                memset(&row->hl[i], HL_COMMENT, row->rsize - i);
+                break;
+            }
+        }
+
+        // string
+        if(E.syntax->flags & HL_HIGHLIGHT_STRINGS) {
+            if(in_string) {
+                row->hl[i] = HL_STRING;
+                if(c == '\\' && i + 1 < row->rsize)  {
+                    row->hl[i + 1] = HL_STRING;
+                    i++;
+                    continue;
+                }
+                if(c == in_string) in_string = 0;
+                continue;
+            }else {
+                if(c == '"' || c == '\'') {
+                    in_string = c;
+                    row->hl[i] = HL_STRING;
+                    continue;
+                }
+            }
+        }
+
+        // number
+        if(E.syntax->flags & HL_HIGHLIGHT_NUMBERS) {
+            if(isdigit(c)) {
+                row->hl[i] = HL_NUMBER;
+            }
+        }
+        
+
+        // keywords
+        for(int j = 0; keywords[j]; j++) {
+            int klen = strlen(keywords[j]);
+            if (!strncmp(&row->render[i], keywords[j], klen)) {
+                memset(&row->hl[i], HL_KEYWORD, klen);
+                i = i + klen - 1;
+                break;
+            }   
         }
     }
 }
@@ -245,8 +331,40 @@ int editorSyntaxToColor(int hl) {
     switch(hl) {
         case HL_NUMBER:
             return 34;
+        case HL_STRING:
+            return 35;
+        case HL_COMMENT:
+            return 32;
+        case HL_KEYWORD:
+            return 36;
         default: 
             return 37;
+    }
+}
+
+// checks if the filetype is one in the filematch array, and sets E.syntax accordingly
+// loops through the HLDB entries and finds whichever file extension it can match to
+void editorSelectSyntaxHighlight() {
+    E.syntax = NULL;
+    if (E.filename == NULL) return;
+    char *ext = strrchr(E.filename, '.');
+    for (unsigned int j = 0; j < HLDB_ENTRIES; j++) {
+        struct editorSyntax *s = &HLDB[j];
+        unsigned int i = 0;
+        while (s->filematch[i]) {
+            int is_ext = (s->filematch[i][0] == '.');
+            if ((is_ext && ext && !strcmp(ext, s->filematch[i])) ||
+                (!is_ext && strstr(E.filename, s->filematch[i]))) {
+                E.syntax = s;
+
+                for(int filerow = 0; filerow < E.numRows; filerow++) {
+                    editorUpdateSyntax(&E.row[filerow]);
+                }
+
+                return;
+            }
+            i++;
+        }
     }
 }
 
@@ -414,6 +532,9 @@ void editorDelChar() {
 void editorOpen(char* filename) {
     free(E.filename);
     E.filename = strdup(filename);
+
+    editorSelectSyntaxHighlight();
+    
     //takes in a file, using getline to add all contents into of file into a char*
     FILE* fp = fopen(filename, "r");
     if(!fp) {
@@ -466,6 +587,7 @@ void editorSave() {
             editorSetStatusMessage("Save aborted");
             return;
         }
+        editorSelectSyntaxHighlight();
     }
 
     int len;
@@ -558,7 +680,7 @@ void editorDrawRows(struct abuf* ab) {
             //this if statement ^^^ checks if anything has been written yet
             if(E.numRows == 0 && i == E.rows / 3) {
                 char welcome[80];
-                int welcomelen = snprintf(welcome, sizeof(welcome), "Heat editor -- version %s", HEAT_VERSION);
+                int welcomelen = snprintf(welcome, sizeof(welcome), "Heat text editor -- version %s", HEAT_VERSION);
                 if(welcomelen > E.cols) {
                     welcomelen = E.cols;
                 }
@@ -627,7 +749,7 @@ void editorDrawStatusBar(struct abuf* ab) {
     //stores the status bar stuff, rstatus is the current line number aligned to the right
     char status[80], rstatus[80];
     int len = snprintf(status, sizeof(status), "%.20s - %d lines %s", E.filename ? E.filename : "[No Name]", E.numRows, E.dirty ? "(modified)" : "");
-    int rlen = snprintf(rstatus, sizeof(rstatus), "%d%d", E.cursorY + 1, E.numRows);
+    int rlen = snprintf(rstatus, sizeof(rstatus), "File Type: %s | Cursor: %d | Rows: %d", E.syntax ? E.syntax->filetype : "none", E.cursorY + 1, E.numRows);
     
     if(len > E.cols) {
         len = E.cols;
@@ -886,10 +1008,10 @@ void initEditor() {
     E.statusmsg_time = 0;
     if(getWindowSize(&E.rows, &E.cols) == -1) die("getWindowSize");
     E.rows -= 2;
+    E.syntax = NULL;
 }
 
 int main(int argc, char* argv[]) {
-    printf("\033[0;36m");
     enableRawMode();
     initEditor();
     if(argc >= 2) {
