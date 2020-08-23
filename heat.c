@@ -51,7 +51,8 @@ enum editorHighlight {
     HL_NUMBER,
     HL_STRING,
     HL_COMMENT,
-    HL_KEYWORD
+    HL_KEYWORD1,
+    HL_KEYWORD2
 };
 
 /*---------------------------------------------------FILE DETECTION---------------------------------------------*/
@@ -66,9 +67,9 @@ struct editorSyntax {
     int flags;                          // bit field that has flags to highlight or not
 };
 
-char* C_HL_EXTENSIONS[] = {".c", ".h", ".cpp", NULL};
+char* C_HL_EXTENSIONS[] = {".c", ".h", ".cpp", ".py", ".html", ".css", ".js", NULL};
 char* C_HL_KEYWORDS[] = {"if", "for", "while", "switch", "break", "continue", "return", "else", "struct", "enum", "class", "case",
-        "union", "typedef", "static", "default", "int", "long", "double", "float", "char", "void", "unsigned", "signed", NULL};
+        "union", "typedef", "static", "default", "#define", "#include", "int|", "long|", "double|", "float|", "char|", "void|", "unsigned|", "signed|", NULL};
 
 // HLDB is highlight database, this is declaring a struct called HLDB that has the c filetype
 struct editorSyntax HLDB[] = {
@@ -317,9 +318,12 @@ void editorUpdateSyntax(erow* row) {
         // keywords
         for(int j = 0; keywords[j]; j++) {
             int klen = strlen(keywords[j]);
+            int kw2 = keywords[j][klen - 1] == '|';
+            if(kw2) klen--;
+
             if (!strncmp(&row->render[i], keywords[j], klen)) {
-                memset(&row->hl[i], HL_KEYWORD, klen);
-                i = i + klen - 1;
+                memset(&row->hl[i], kw2 ? HL_KEYWORD2 : HL_KEYWORD1, klen);
+                i += klen;
                 break;
             }   
         }
@@ -330,15 +334,17 @@ void editorUpdateSyntax(erow* row) {
 int editorSyntaxToColor(int hl) {
     switch(hl) {
         case HL_NUMBER:
-            return 34;
+            return 202;
         case HL_STRING:
-            return 35;
+            return 228;
         case HL_COMMENT:
-            return 32;
-        case HL_KEYWORD:
-            return 36;
+            return 172;
+        case HL_KEYWORD1:
+            return 38;
+        case HL_KEYWORD2:
+            return 25;
         default: 
-            return 37;
+            return 15;
     }
 }
 
@@ -727,7 +733,7 @@ void editorDrawRows(struct abuf* ab) {
                     if(color != current_color) {
                         current_color = color;
                         char buf[16];
-                        int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", color);
+                        int clen = snprintf(buf, sizeof(buf), "\x1b[38;5;%dm", color);
                         abAppend(ab, buf, clen);
                     }
                     abAppend(ab, &c[i], 1);

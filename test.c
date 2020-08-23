@@ -1,8 +1,10 @@
-// this is a test for the c highlight
+// this is a test for the Heat text editor
+#include <string.h>
 
-for(int i = 0; i < 10; i++) {
-	snprintf("hello there");
-	continue;
+int main(int argc, char* argv[]) {
+	for(int i = 0; i < 10; i++) {
+		printf("hello there");
+		continue;
+	}
+	return 8;
 }
-return 8;
-
