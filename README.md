@@ -1,15 +1,10 @@
-# heat-text-editor
+# "Heat" Text Editor
 
-<<<<<<< HEAD
 <img src="https://github.com/hdinh77/heat-text-editor/blob/master/heat.JPG"></img>
 
-things learned about C
-- low-level terminal / character key processing
-=======
 # Notes on topics learned about C
 
 ## Low-level terminal / character key processing
->>>>>>> 5b0367a17628acd8444121f81fda0f3eecc9117d
 - escape sequences, and how each of them correlate to different keypresses and how they can be changed
 - #define creates a global constant that is replaced with the following string
 - when we defined CTRL_KEY, this replaces every instance of CTRL_KEY(k) with ((k) & 0x1f) which is the expression
