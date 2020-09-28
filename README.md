@@ -1,5 +1,7 @@
 # heat-text-editor
 
+<img src="https://github.com/hdinh77/heat-text-editor/blob/master/heat.JPG"></img>
+
 things learned about C
 - low-level terminal / character key processing
 - escape sequences, and how each of them correlate to different keypresses and how they can be changed
